@@ -76,48 +76,17 @@ class KeyExchange:
             backend=default_backend()
         ).derive(kyber_shared_secret + ecdh_shared_secret)
         
-        return hybrid_shared_secret, ciphertext
-    
-    '''
-    def hybrid_key_decapsulation(self, ciphertext, kyber_secret_key, ecdh_pub):
-        """
-        Hybrid Decapsulation of Kyber + ECDH Shared Secrets.
-        Fix: Handles 32-byte Kyber Ciphertext by expanding it before Kyber decryption.
-
-        :param bytes ciphertext: 32-byte Kyber ciphertext (instead of 800 bytes)
-        :param bytes kyber_secret_key: Kyber secret key
-        :param bytes ecdh_pub: ECDH public key from the other party
-        :return: Combined shared key
-        :rtype: bytes
-        """
-        if len(ciphertext) == 32:
-            # Fix: Expand ciphertext to expected length using HKDF
-            hkdf = HKDF(
-                algorithm=hashes.SHA256(),
-                length=800,  # Expected Kyber ciphertext length
-                salt=b"kyber_padding",
-                info=b"expand_kyber_ct"
-            )
-            ciphertext = hkdf.derive(ciphertext)  # Expand 32 bytes to 800 bytes
-
-        # Now pass the correctly-sized ciphertext to Kyber
-        kyber_shared_secret = self.kyber.decaps(ciphertext, kyber_secret_key)
-
-        # ECDH key agreement
-        ecdh_shared_secret = self.ecdh.compute_shared_secret(ecdh_pub)
-
-        # Derive final hybrid key
-        combined_secret = kyber_shared_secret + ecdh_shared_secret
-        hkdf_final = HKDF(
+        key_material = HKDF(
             algorithm=hashes.SHA256(),
-            length=32,
-            salt=b"final_hybrid_secret",
-            info=b"kyber_ecdh_shared"
-        )
-        final_shared_key = hkdf_final.derive(combined_secret)
+            length=48,  # 32 bytes for AES-256, 16 bytes for HMAC-SHA256 key
+            salt=None,
+            info=b"AES-HMAC Key Separation",
+        ).derive(hybrid_shared_secret)
 
-        return final_shared_key
-    '''
+        aes_shared_key = key_material[:32] # First 32 bytes for AES-256
+        hmac_shared_key = key_material[32:] # Last 16 bytes for HMAC
+
+        return aes_shared_key,hmac_shared_key, ciphertext
     
     def hybrid_key_decapsulation(self, ciphertext, kyber_secret_key, ecdh_pub):
         """
@@ -160,26 +129,15 @@ class KeyExchange:
         )
         final_shared_key = hkdf_final.derive(combined_secret)
 
-        return final_shared_key
-
-    '''
-    def hybrid_key_decapsulation(self, ciphertext, kyber_secret_key, peer_ecc_public_bytes):
-        peer_ecc_public_key = self.deserialize_public_key(peer_ecc_public_bytes)
-        
-        # ECC key agreement
-        ecdh_shared_secret = self.derive_ecdh_shared_secret(peer_ecc_public_key)
-        
-        # Kyber decapsulation
-        kyber_shared_secret = self.kyber.decaps(ciphertext, kyber_secret_key)
-        
-        # Combine secrets using HKDF
-        hybrid_shared_secret = HKDF(
+        key_material = HKDF(
             algorithm=hashes.SHA256(),
-            length=32,
+            length=48,  # 32 bytes for AES-256, 16 bytes for HMAC-SHA256 key
             salt=None,
-            info=b"Hybrid Key Exchange",
-            backend=default_backend()
-        ).derive(ecdh_shared_secret + kyber_shared_secret)
-        
-        return hybrid_shared_secret
-    '''
+            info=b"AES-HMAC Key Separation",
+        ).derive(final_shared_key)
+
+        aes_key = key_material[:32] ## First 32 bytes for AES-256
+        hmac_key = key_material[32:] # Last 16 bytes for HMAC
+
+        return aes_key,hmac_key
+

@@ -7,6 +7,7 @@ from key_exchange import KeyExchange
 from digital_signature import DigitalSignature
 from message_encryption import MessageEncryption
 from key_management import load_public_key, load_private_key
+from hmac_utils import generate_hmac,verify_hmac
 
 HOST = '127.0.0.1'
 PORT = 12345
@@ -25,7 +26,7 @@ def recv_exact(sock, length):
     return data
 
 def verify_connection(client_socket):
-    # Step 1: Receive Client ID
+    # Step: Receive Client ID
     length_data = client_socket.recv(4)  # Receive 4-byte length
     if not length_data:
         print(f"{server_id} Error: No data received for client ID length.")
@@ -36,7 +37,7 @@ def verify_connection(client_socket):
     client_id = recv_exact(client_socket, length).decode()
     print(f"{server_id} Received Client ID: {client_id} (Length: {length})")
 
-    # Step 2: Retrieve Stored Client ECC Public Key
+    # Step: Retrieve Stored Client ECC Public Key
     try:
         client_public_key = load_public_key(client_id)
     except FileNotFoundError:
@@ -45,7 +46,7 @@ def verify_connection(client_socket):
         client_socket.close()
         return
 
-    # Step 3: Receive Nonce & Signature from Client
+    # Step: Receive Nonce & Signature from Client
     length = struct.unpack(">I", client_socket.recv(4))[0]
     data = recv_exact(client_socket, length)
 
@@ -53,7 +54,7 @@ def verify_connection(client_socket):
     nonce = data[:nonce_length]
     client_signature = data[nonce_length:]  # Remaining bytes are the signature
 
-    # Step 4: Verify Client's Signature on Nonce
+    # Step: Verify Client's Signature on Nonce
     if not server_signature.verify_signature(nonce, client_signature, client_public_key):
         print(f"{server_id} Client authentication failed.")
         client_socket.sendall(struct.pack(">I",0))
@@ -63,12 +64,7 @@ def verify_connection(client_socket):
         client_socket.sendall(struct.pack(">I",4))
         print(f"{server_id} Client authentication successful.")
     
-    # Step 5: Server Authentication - Generate and Send Nonce & Signature
-    # server_id_bytes = server_id.encode()
-    # client_socket.sendall(struct.pack(">I",len(server_id_bytes)) + server_id_bytes)
-    # print(f"[Server] Sent Server Id: {server_id} (Length: {len(server_id_bytes)})")
-        # Step 5: Server Authentication - Generate and Send Nonce & Signature
-
+    # Step: Server Authentication - Generate and Send Nonce & Signature
     server_id_bytes = server_id.encode()
     client_socket.sendall(struct.pack(">I", len(server_id_bytes)) + server_id_bytes)
     print(f"{client_id} Sent Client ID: {server_id} (Length: {len(server_id_bytes)})")
@@ -83,7 +79,7 @@ def verify_connection(client_socket):
     nonce = secrets.token_bytes(32)
     signature = server_signature.sign_message(nonce,server_private_key)
 
-    # Step 6: Send Nonce and Signature to Client
+    # Step: Send Nonce and Signature to Client
     client_socket.sendall(struct.pack(">I", len(nonce) + len(signature)) + nonce + signature)
     print(f"{server_id} Sent nonce and signature for authentication.")
     print(f"Waiting for Confirmation")
@@ -104,19 +100,14 @@ def verify_connection(client_socket):
 def handle_client(client_socket):
     print(f"{server_id} Handling new client connection.")
     
-    # Step 1: Receive Client ID
-    # length = struct.unpack(">I", client_socket.recv(4))[0]
-    # client_id = recv_exact(client_socket, length).decode()
-    # print(f"[Server] Client ID received: {client_id}")
-    
+    # Step: Verification of Connected User
     if not verify_connection(client_socket):
         print("Authentication failed. Closing connection.")
         return
-        # client_socket.close()
     else:
         print("Authentication Successful.")
 
-    # Step 5: Proceed with Hybrid Key Exchange
+    # Step: Proceed with Hybrid Key Exchange
     server_ecdh_pub = server_key_exchange.get_ecdh_public_bytes()
     server_kyber_pub, server_kyber_secret = server_key_exchange.kyber.keygen()
 
@@ -132,16 +123,16 @@ def handle_client(client_socket):
     kyber_ciphertext = recv_exact(client_socket, length)
     print(f"{server_id} Received Kyber Ciphertext (length={len(kyber_ciphertext)}).")
 
-    aes_shared_key = server_key_exchange.hybrid_key_decapsulation(kyber_ciphertext, server_kyber_secret, client_ecdh_pub)
+    aes_shared_key,hmac_shared_key = server_key_exchange.hybrid_key_decapsulation(kyber_ciphertext, server_kyber_secret, client_ecdh_pub)
     print(f"{server_id} Shared Key Derived: {aes_shared_key.hex()}")
 
     encryption = MessageEncryption(aes_shared_key)
 
     # Start Secure Communication Threads
-    threading.Thread(target=receive_messages, args=(client_socket, encryption)).start()
-    threading.Thread(target=send_messages, args=(client_socket, encryption)).start()
+    threading.Thread(target=receive_messages, args=(client_socket, encryption,hmac_shared_key)).start()
+    threading.Thread(target=send_messages, args=(client_socket, encryption,hmac_shared_key)).start()
 
-def receive_messages(client_socket, encryption):
+def receive_messages(client_socket, encryption,hmac_key):
     while True:
         try:
             data = client_socket.recv(4096)
@@ -149,18 +140,30 @@ def receive_messages(client_socket, encryption):
                 print(f"{server_id} Client disconnected.")
                 break
 
-            iv, tag, ciphertext = data.split(b'||')
+            iv, tag, ciphertext,received_hmac = data.split(b'||')
+
+            # Verify HMAC before decryption
+            if not verify_hmac(hmac_key, ciphertext, received_hmac):
+                print("[ERROR] HMAC verification failed! Message tampered.")
+                continue  # Ignore tampered messages
+            else:
+                print("Message is Genuine!")
+
             decrypted_message = encryption.decrypt(iv, tag, ciphertext)
             print(f"\n[Client] {decrypted_message.decode()}")
+
         except Exception as e:
             print(f"{server_id} Error receiving message: {e}")
             break
 
-def send_messages(client_socket, encryption):
+def send_messages(client_socket, encryption,hmac_key):
     while True:
         message = input(f"{server_id} Enter message: ").encode()
         iv, tag, ciphertext = encryption.encrypt(message)
-        client_socket.sendall(b'||'.join([iv, tag, ciphertext]))
+
+        hmac_value = generate_hmac(hmac_key,ciphertext)
+        # SEnding Encrypted Message + HMAC
+        client_socket.sendall(b'||'.join([iv, tag, ciphertext,hmac_value]))
 
 def start_server():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

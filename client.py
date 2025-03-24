@@ -7,6 +7,7 @@ from key_exchange import KeyExchange
 from digital_signature import DigitalSignature
 from message_encryption import MessageEncryption
 from key_management import load_private_key,load_public_key
+from hmac_utils import verify_hmac,generate_hmac
 
 HOST = '127.0.0.1'
 PORT = 12345
@@ -25,7 +26,7 @@ def recv_exact(sock, length):
         data += packet
     return data
 
-def handle_receive(client_socket, encryption):
+def handle_receive(client_socket, encryption,hmac_key):
     while True:
         try:
             data = client_socket.recv(4096)
@@ -36,7 +37,14 @@ def handle_receive(client_socket, encryption):
             print(f"[Server] Received encrypted message: {data.hex()}")
 
             try:
-                iv, tag, ciphertext = data.split(b'||')  # Ensure correct format
+                iv, tag, ciphertext,received_hmac = data.split(b'||')  # Ensure correct format
+                
+                if not verify_hmac(hmac_key, ciphertext, received_hmac):
+                    print("[ERROR] HMAC verification failed! Message tampered.")
+                    continue  # Ignore tampered messages
+                else:
+                    print("Message is Genuine!")
+            
                 decrypted_message = encryption.decrypt(iv, tag, ciphertext)
                 print(f"[Client] {decrypted_message.decode()}")
             except Exception as e:
@@ -47,43 +55,41 @@ def handle_receive(client_socket, encryption):
             print(f"[Server] Error receiving message: {e}")
             break
 
-def handle_send(client_socket, encryption):
-    """Allows the client to send encrypted messages to the server."""
+def handle_send(client_socket, encryption,hmac_key): # Function to send Encrypted Messages
     while True:
         message = input(f"{client_id} Enter message: ").encode()
 
         # Encrypt the message
         iv, tag, ciphertext = encryption.encrypt(message)
+        # Generate HMAC for the Message
+        hmac_value = generate_hmac(hmac_key,ciphertext)
 
         # Send Encrypted Message
-        client_socket.sendall(b'||'.join([iv, tag, ciphertext]))
+        client_socket.sendall(b'||'.join([iv, tag, ciphertext,hmac_value]))
         print(f"{client_id} Encrypted message sent.")
 
 def verify_connection(client_socket):
-    # Step 1: Send Client ID
-    # Step 1: Send Client ID with length prefix
+    # Step: Send Client ID with length prefix
     client_id_bytes = client_id.encode()
     client_socket.sendall(struct.pack(">I", len(client_id_bytes)) + client_id_bytes)
     print(f"{client_id} Sent Client ID: {client_id} (Length: {len(client_id_bytes)})")
 
-    # Step 2: Retrieve Client Private Key
+    # Step: Retrieve Client Private Key
     private_key_path = os.path.join("private_keys", f"{client_id}_private.pem")
     if not os.path.exists(private_key_path):
         print(f"{client_id} Private key not found! Exiting.")
         return
     client_private_key = load_private_key(client_id)
 
-    # Step 3: Generate and Sign Nonce
+    # Step: Generate and Sign Nonce
     nonce = secrets.token_bytes(32)
     signature = client_signature.sign_message(nonce, client_private_key)
 
-    # Step 4: Send Nonce and Signature to Server
-    # client_socket.sendall(struct.pack(">I", len(nonce)) + nonce)
-    # client_socket.sendall(struct.pack(">I", len(signature)) + signature)
+    # Step: Send Nonce and Signature to Server
     client_socket.sendall(struct.pack(">I", len(nonce) + len(signature)) + nonce + signature)
     print(f"{client_id} Sent nonce and signature for authentication.")
 
-    # Step 1: Wait for server authentication response
+    # Step: Wait for server authentication response
     print("Waiting for Confirmation")
     Confirmation_data = client_socket.recv(4)
     if not Confirmation_data:
@@ -122,9 +128,7 @@ def verify_connection(client_socket):
     svr_nonce_length = 32
     svr_nonce = data[:svr_nonce_length]
     server_signature = data[svr_nonce_length:]
-    
-    # client_socket.sendall(struct.pack(">I", 0)) 
-    # client_socket.close()
+
     if not client_signature.verify_signature(svr_nonce,server_signature,server_public_key):
         print(f"{client_id} Server Authentication Failed")
         client_socket.close()
@@ -141,23 +145,20 @@ def start_client():
     client_socket.connect((HOST, PORT))
     print(f"{client_id} Connected to Server.")
 
+    # Step: Verify the Connected User
     if not verify_connection(client_socket):
         print("[Mutual Authentication Failed]")
-        # client_socket.close()
         return
     else:
         print("Authentication Successful")
 
-    # Step 5: Proceed with Key Exchange
+    # Step: Proceed with Key Exchange
     client_ecdh_pub = client_key_exchange.get_ecdh_public_bytes()
     client_socket.sendall(struct.pack(">I", len(client_ecdh_pub)) + client_ecdh_pub)
     print(f"{client_id} Sent ECDH Public Key = {client_ecdh_pub.hex()}")
 
-    # length = struct.unpack(">I", client_socket.recv(4))[0]
-    # server_ecdh_pub = recv_exact(client_socket, length)
-    # print(f"[Client] Received Server's ECDH Public Key = {server_ecdh_pub.hex()}")
     try:
-        length_data = client_socket.recv(4)  # Attempt to receive data
+        length_data = client_socket.recv(4)  
         if not length_data:
             print(f"{client_id} Server disconnected.")
             client_socket.close()
@@ -180,15 +181,15 @@ def start_client():
     server_kyber_pub = recv_exact(client_socket, length)
     print(f"{client_id} Received Server's Kyber Public Key = {server_kyber_pub.hex()}")
 
-    aes_shared_key, kyber_ciphertext = client_key_exchange.hybrid_key_exchange(server_ecdh_pub, server_kyber_pub)
+    aes_shared_key,hmac_shared_key, kyber_ciphertext = client_key_exchange.hybrid_key_exchange(server_ecdh_pub, server_kyber_pub)
     client_socket.sendall(struct.pack(">I", len(kyber_ciphertext)) + kyber_ciphertext)
     print(f"{client_id} Sent Kyber Ciphertext = {kyber_ciphertext.hex()}")
     print(f"{client_id} Shared Key Derived: {aes_shared_key.hex()}")
 
     encryption = MessageEncryption(aes_shared_key)
 
-    threading.Thread(target=handle_receive, args=(client_socket, encryption)).start()
-    threading.Thread(target=handle_send, args=(client_socket, encryption)).start()
+    threading.Thread(target=handle_receive, args=(client_socket, encryption,hmac_shared_key)).start()
+    threading.Thread(target=handle_send, args=(client_socket, encryption,hmac_shared_key)).start()
 
 if __name__ == "__main__":
     start_client()
