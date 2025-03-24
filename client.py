@@ -6,7 +6,7 @@ import secrets
 from key_exchange import KeyExchange
 from digital_signature import DigitalSignature
 from message_encryption import MessageEncryption
-from key_management import load_private_key
+from key_management import load_private_key,load_public_key
 
 HOST = '127.0.0.1'
 PORT = 12345
@@ -50,31 +50,26 @@ def handle_receive(client_socket, encryption):
 def handle_send(client_socket, encryption):
     """Allows the client to send encrypted messages to the server."""
     while True:
-        message = input("[Client] Enter message: ").encode()
+        message = input(f"{client_id} Enter message: ").encode()
 
         # Encrypt the message
         iv, tag, ciphertext = encryption.encrypt(message)
 
         # Send Encrypted Message
         client_socket.sendall(b'||'.join([iv, tag, ciphertext]))
-        print("[Client] Encrypted message sent.")
+        print(f"{client_id} Encrypted message sent.")
 
-def start_client():
-    """Connects to the server, performs authentication, and securely sends messages."""
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    client_socket.connect((HOST, PORT))
-    print("[Client] Connected to Server.")
-
+def verify_connection(client_socket):
     # Step 1: Send Client ID
     # Step 1: Send Client ID with length prefix
     client_id_bytes = client_id.encode()
     client_socket.sendall(struct.pack(">I", len(client_id_bytes)) + client_id_bytes)
-    print(f"[Client] Sent Client ID: {client_id} (Length: {len(client_id_bytes)})")
+    print(f"{client_id} Sent Client ID: {client_id} (Length: {len(client_id_bytes)})")
 
     # Step 2: Retrieve Client Private Key
     private_key_path = os.path.join("private_keys", f"{client_id}_private.pem")
     if not os.path.exists(private_key_path):
-        print("[Client] Private key not found! Exiting.")
+        print(f"{client_id} Private key not found! Exiting.")
         return
     client_private_key = load_private_key(client_id)
 
@@ -86,16 +81,77 @@ def start_client():
     # client_socket.sendall(struct.pack(">I", len(nonce)) + nonce)
     # client_socket.sendall(struct.pack(">I", len(signature)) + signature)
     client_socket.sendall(struct.pack(">I", len(nonce) + len(signature)) + nonce + signature)
-    print("[Client] Sent nonce and signature for authentication.")
+    print(f"{client_id} Sent nonce and signature for authentication.")
 
-    # print("[Server] Client authentication failed. Closing connection.")
+    # Step 1: Wait for server authentication response
+    print("Waiting for Confirmation")
+    Confirmation_data = client_socket.recv(4)
+    if not Confirmation_data:
+        print("Connection Closed before confirmation received")
+        client_socket.close()
+        return False
+    confirmation_length = struct.unpack(">I",Confirmation_data)[0]
+    if confirmation_length == 0:
+        print("My Authentication Failed.")
+        client_socket.close()
+        return False
+    else:
+        print("Server Authenticated Me")
+    
+    # Now Verify Server Signature
+    s_length_data = client_socket.recv(4)
+    if not s_length_data:
+        print(f"{client_id} Server closed connection before sending its ID.")
+        client_socket.close()
+        return False
+    
+    s_length = struct.unpack(">I",s_length_data)[0]
+    server_id = recv_exact(client_socket,s_length).decode()
+    print(f"{client_id} Received Server ID: {server_id} (Length: {s_length})")
+
+    try:
+        server_public_key = load_public_key(server_id)
+    except FileNotFoundError:
+        print(f"{server_id} No registered public key found for server ID: {server_id}. Rejecting connection.")
+        client_socket.close()
+        return False
+    
+    svr_length = struct.unpack(">I",client_socket.recv(4))[0]
+    data = recv_exact(client_socket,svr_length)
+
+    svr_nonce_length = 32
+    svr_nonce = data[:svr_nonce_length]
+    server_signature = data[svr_nonce_length:]
+    
+    # client_socket.sendall(struct.pack(">I", 0)) 
     # client_socket.close()
-    # return
+    if not client_signature.verify_signature(svr_nonce,server_signature,server_public_key):
+        print(f"{client_id} Server Authentication Failed")
+        client_socket.close()
+        return False
+    else:
+        client_socket.sendall(struct.pack(">I",5))
+        print(f"{client_id} Server Authentication Success")
+
+    return True
+
+def start_client():
+    """Connects to the server, performs authentication, and securely sends messages."""
+    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    client_socket.connect((HOST, PORT))
+    print(f"{client_id} Connected to Server.")
+
+    if not verify_connection(client_socket):
+        print("[Mutual Authentication Failed]")
+        # client_socket.close()
+        return
+    else:
+        print("Authentication Successful")
 
     # Step 5: Proceed with Key Exchange
     client_ecdh_pub = client_key_exchange.get_ecdh_public_bytes()
     client_socket.sendall(struct.pack(">I", len(client_ecdh_pub)) + client_ecdh_pub)
-    print(f"[Client] Sent ECDH Public Key = {client_ecdh_pub.hex()}")
+    print(f"{client_id} Sent ECDH Public Key = {client_ecdh_pub.hex()}")
 
     # length = struct.unpack(">I", client_socket.recv(4))[0]
     # server_ecdh_pub = recv_exact(client_socket, length)
@@ -103,31 +159,31 @@ def start_client():
     try:
         length_data = client_socket.recv(4)  # Attempt to receive data
         if not length_data:
-            print("[Client] Server disconnected.")
+            print(f"{client_id} Server disconnected.")
             client_socket.close()
             return  # Exit cleanly
 
         length = struct.unpack(">I", length_data)[0]
         server_ecdh_pub = recv_exact(client_socket, length)
-        print(f"[Client] Received Server's ECDH Public Key = {server_ecdh_pub.hex()}")
+        print(f"{client_id} Received Server's ECDH Public Key = {server_ecdh_pub.hex()}")
 
     except ConnectionResetError:
-        print("[Client] Server forcibly closed the connection.")
+        print(f"{client_id} Server forcibly closed the connection.")
         client_socket.close()
         return
     except Exception as e:
-        print(f"[Client] Error: {e}")
+        print(f"{client_id} Error: {e}")
         client_socket.close()
         return
 
     length = struct.unpack(">I", client_socket.recv(4))[0]
     server_kyber_pub = recv_exact(client_socket, length)
-    print(f"[Client] Received Server's Kyber Public Key = {server_kyber_pub.hex()}")
+    print(f"{client_id} Received Server's Kyber Public Key = {server_kyber_pub.hex()}")
 
     aes_shared_key, kyber_ciphertext = client_key_exchange.hybrid_key_exchange(server_ecdh_pub, server_kyber_pub)
     client_socket.sendall(struct.pack(">I", len(kyber_ciphertext)) + kyber_ciphertext)
-    print(f"[Client] Sent Kyber Ciphertext = {kyber_ciphertext.hex()}")
-    print(f"[Client] Shared Key Derived: {aes_shared_key.hex()}")
+    print(f"{client_id} Sent Kyber Ciphertext = {kyber_ciphertext.hex()}")
+    print(f"{client_id} Shared Key Derived: {aes_shared_key.hex()}")
 
     encryption = MessageEncryption(aes_shared_key)
 
