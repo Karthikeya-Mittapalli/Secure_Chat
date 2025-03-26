@@ -15,6 +15,7 @@ server_id = "Mark"
 
 server_key_exchange = KeyExchange()
 server_signature = DigitalSignature()
+stop_event = threading.Event()
 
 def recv_exact(sock, length):
     data = b""
@@ -133,7 +134,8 @@ def handle_client(client_socket):
     threading.Thread(target=send_messages, args=(client_socket, encryption,hmac_shared_key)).start()
 
 def receive_messages(client_socket, encryption,hmac_key):
-    while True:
+    while not stop_event.is_set(): #Checking if EXIT is requested
+        client_socket.settimeout(1.0)
         try:
             data = client_socket.recv(4096)
             if not data:
@@ -152,18 +154,43 @@ def receive_messages(client_socket, encryption,hmac_key):
             decrypted_message = encryption.decrypt(iv, tag, ciphertext)
             print(f"\n[Client] {decrypted_message.decode()}")
 
+            if decrypted_message == "EXIT":  # Client wants to disconnect
+                print(f"{server_id} Client requested disconnect.")
+                stop_event.set()
+                client_socket.close()
+                break  # Exit loop to terminate server-side handling
+        
+        except socket.timeout:
+            continue
         except Exception as e:
             print(f"{server_id} Error receiving message: {e}")
             break
 
 def send_messages(client_socket, encryption,hmac_key):
-    while True:
-        message = input(f"{server_id} Enter message: ").encode()
-        iv, tag, ciphertext = encryption.encrypt(message)
+    while not stop_event.is_set():
+        client_socket.settimeout(1.0)
+        try:
+            message = input(f"{server_id} Enter message: ").encode()
 
-        hmac_value = generate_hmac(hmac_key,ciphertext)
-        # SEnding Encrypted Message + HMAC
-        client_socket.sendall(b'||'.join([iv, tag, ciphertext,hmac_value]))
+            if message == b"EXIT":
+                iv, tag, ciphertext = encryption.encrypt(message)
+                hmac_value = generate_hmac(hmac_key, ciphertext)
+                client_socket.sendall(b'||'.join([iv, tag, ciphertext, hmac_value]))
+                print("Server closing connection...")
+                stop_event.set()
+                client_socket.close()
+                break
+
+            iv, tag, ciphertext = encryption.encrypt(message)
+
+            hmac_value = generate_hmac(hmac_key,ciphertext)
+            # SEnding Encrypted Message + HMAC
+            client_socket.sendall(b'||'.join([iv, tag, ciphertext,hmac_value]))
+        except socket.timeout:
+            continue
+        except Exception as e:
+            print(f"{server_id} Error receiving message Connection Maybe Closed = {e}")
+            break
 
 def start_server():
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

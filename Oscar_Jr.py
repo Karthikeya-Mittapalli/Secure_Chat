@@ -3,6 +3,8 @@ import threading
 import struct
 import os
 import secrets
+import hmac
+import hashlib
 from key_exchange import KeyExchange
 from digital_signature import DigitalSignature
 from message_encryption import MessageEncryption
@@ -26,6 +28,16 @@ def recv_exact(sock, length):
             raise ConnectionError("Connection closed while receiving data.")
         data += packet
     return data
+
+def intercept_and_tamper(ciphertext: bytes) -> bytes:
+    """
+    Simulates an attacker modifying the encrypted message.
+    This function flips a bit in the ciphertext to tamper with it.
+    """
+    tampered = bytearray(ciphertext)
+    if len(tampered) > 0:
+        tampered[0] ^= 0x01  # Flip the first bit to tamper with the message
+    return bytes(tampered)
 
 def handle_receive(client_socket, encryption,hmac_key):
     while not stop_event.is_set(): # Checking if EXIT is requested
@@ -74,7 +86,7 @@ def handle_send(client_socket, encryption,hmac_key): # Function to send Encrypte
             if message == b"EXIT":
                 iv, tag, ciphertext = encryption.encrypt(message)
                 hmac_value = generate_hmac(hmac_key, ciphertext)
-                client_socket.sendall(b'||'.join([iv, tag, ciphertext, hmac_value]))
+                client_socket.sendall(b'||'.join([iv, tag,ciphertext , hmac_value]))
                 print("Closing connection...")
                 stop_event.set() # Notifing Receiver thread to exit
                 client_socket.close()
@@ -82,11 +94,14 @@ def handle_send(client_socket, encryption,hmac_key): # Function to send Encrypte
 
             # Encrypt the message
             iv, tag, ciphertext = encryption.encrypt(message)
+            tampered_ciphertext = intercept_and_tamper(ciphertext)
+            print(tampered_ciphertext)
+
             # Generate HMAC for the Message
             hmac_value = generate_hmac(hmac_key,ciphertext)
 
             # Send Encrypted Message
-            client_socket.sendall(b'||'.join([iv, tag, ciphertext,hmac_value]))
+            client_socket.sendall(b'||'.join([iv, tag, tampered_ciphertext,hmac_value]))
             print(f"{client_id} Encrypted message sent.")
         except socket.timeout:
             continue
@@ -164,6 +179,7 @@ def verify_connection(client_socket):
         print(f"{client_id} Server Authentication Success")
 
     return True
+
 
 def start_client():
     """Connects to the server, performs authentication, and securely sends messages."""

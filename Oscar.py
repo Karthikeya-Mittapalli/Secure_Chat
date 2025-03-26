@@ -14,7 +14,8 @@ PORT = 12345
 
 client_key_exchange = KeyExchange()
 client_signature = DigitalSignature()
-client_id = "Shawn"
+client_id = "Oscar"
+Fake_Client_Id = "Shawn"
 stop_event = threading.Event()
 
 def recv_exact(sock, length):
@@ -96,9 +97,9 @@ def handle_send(client_socket, encryption,hmac_key): # Function to send Encrypte
 
 def verify_connection(client_socket):
     # Step: Send Client ID with length prefix
-    client_id_bytes = client_id.encode()
+    client_id_bytes = Fake_Client_Id.encode()
     client_socket.sendall(struct.pack(">I", len(client_id_bytes)) + client_id_bytes)
-    print(f"{client_id} Sent Client ID: {client_id} (Length: {len(client_id_bytes)})")
+    print(f"{client_id} Sent Client ID: {Fake_Client_Id} (Length: {len(client_id_bytes)})")
 
     # Step: Retrieve Client Private Key
     private_key_path = os.path.join("private_keys", f"{client_id}_private.pem")
@@ -124,7 +125,7 @@ def verify_connection(client_socket):
         return False
     confirmation_length = struct.unpack(">I",Confirmation_data)[0]
     if confirmation_length == 0:
-        print("My Authentication Failed.")
+        print("Server Denied Your Authentication")
         client_socket.close()
         return False
     else:
