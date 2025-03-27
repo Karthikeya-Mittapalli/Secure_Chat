@@ -36,7 +36,7 @@ def handle_receive(client_socket, encryption,hmac_key):
                 print("[Server] Client disconnected.")
                 break
 
-            print(f"[Server] Received encrypted message: {data.hex()}")
+            # print(f"[Server] Received encrypted message: {data.hex()}")
 
             try:
                 iv, tag, ciphertext,received_hmac = data.split(b'||')  # Ensure correct format

@@ -27,6 +27,7 @@ def recv_exact(sock, length):
     return data
 
 def verify_connection(client_socket):
+    # Client Authentication
     # Step: Receive Client ID
     length_data = client_socket.recv(4)  # Receive 4-byte length
     if not length_data:
@@ -108,7 +109,7 @@ def handle_client(client_socket):
     else:
         print("Authentication Successful.")
 
-    # Step: Proceed with Hybrid Key Exchange
+    # Step: Secure Hybrid Key Exchange & Shared Key Derivation
     server_ecdh_pub = server_key_exchange.get_ecdh_public_bytes()
     server_kyber_pub, server_kyber_secret = server_key_exchange.kyber.keygen()
 
@@ -118,11 +119,14 @@ def handle_client(client_socket):
 
     client_socket.sendall(struct.pack(">I", len(server_ecdh_pub)) + server_ecdh_pub)
     client_socket.sendall(struct.pack(">I", len(server_kyber_pub)) + server_kyber_pub)
-    print(f"{server_id} Sent ECC and Kyber Public Keys.")
+    print(f"{server_id} Sent ECDH and Kyber Public Keys.")
+    print(f"{server_id} Sent ECDH Public Key = ",server_ecdh_pub.hex())
+    print(f"{server_id} Sent Kyber Public Key = ",server_kyber_pub.hex())
     
     length = struct.unpack(">I", client_socket.recv(4))[0]
     kyber_ciphertext = recv_exact(client_socket, length)
-    print(f"{server_id} Received Kyber Ciphertext (length={len(kyber_ciphertext)}).")
+    # print(f"{server_id} Received Kyber Ciphertext (length={len(kyber_ciphertext)}).")
+    print(f"{server_id} Received Kyber Ciphertext {kyber_ciphertext.hex()}.")
 
     aes_shared_key,hmac_shared_key = server_key_exchange.hybrid_key_decapsulation(kyber_ciphertext, server_kyber_secret, client_ecdh_pub)
     print(f"{server_id} Shared Key Derived: {aes_shared_key.hex()}")

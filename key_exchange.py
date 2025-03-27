@@ -9,7 +9,7 @@ class KeyExchange:
     def __init__(self):
         # Define the Kyber parameter set
         parameter_set = {
-            "k": 2,      # Security level parameter (Kyber-768)
+            "k": 2,      # Security level parameter (Kyber-512)
             "eta_1": 3,  # Noise parameter for key generation
             "eta_2": 2,  # Noise parameter for encapsulation
             "du": 10,    # Compression parameter for public key
@@ -40,33 +40,15 @@ class KeyExchange:
         return self.ec_private_key.exchange(ec.ECDH(), peer_ecc_public_key)
     
     def encapsulate_kyber_secret(self,kyber_public_key):
-        # kyber_public_key, kyber_secret_key = self.kyber.keygen()
         kyber_shared_secret, ciphertext = self.kyber.encaps(kyber_public_key)
-        print(f"[DEBUG] Kyber Ciphertext Length (Before Sending): {len(ciphertext)} bytes")
-        print(f"[inner 2 DEBUG] Kyber Public Key Length: {len(kyber_public_key)} bytes")
-        print(f"[inner 2 DEBUG] Kyber Ciphertext Length: {len(ciphertext)} bytes")
-        print(f"[inner 2 DEBUG] Kyber Shared Secret Length: {len(kyber_shared_secret)} bytes")
         return ciphertext, kyber_shared_secret
     
-    def hybrid_key_exchange(self, peer_ecc_public_bytes,server_kyber_pub):
-        peer_ecc_public_key = self.deserialize_public_key(peer_ecc_public_bytes)
-        
-        # ECC key agreement
+    def hybrid_key_exchange(self, peer_ecdh_public_bytes,server_kyber_pub):
+        peer_ecc_public_key = self.deserialize_public_key(peer_ecdh_public_bytes)
+        # ECDH key agreement
         ecdh_shared_secret = self.derive_ecdh_shared_secret(peer_ecc_public_key)
-        print(f"[DEBUG] ECDH Shared Secret: {ecdh_shared_secret.hex()}")
-
-        
         # Kyber key encapsulation
         ciphertext, kyber_shared_secret = self.encapsulate_kyber_secret(server_kyber_pub)
-        print(f"[DEBUG] Kyber Shared Secret: {kyber_shared_secret.hex()}")
-
-        print(f"[inner DEBUG] Expected Kyber Ciphertext Length: 1088 bytes, Got: {len(ciphertext)} bytes")
-        print(f"[inner DEBUG] Kyber Shared Secret Length: {len(kyber_shared_secret)} bytes")
-
-        print(f"[Inner DEBUG] Kyber Ciphertext Length: {len(ciphertext)} bytes")  
-
-        print(f"[DEBUG] HKDF Input: {ecdh_shared_secret.hex()} + {kyber_shared_secret.hex()}")
-        
         # Combine secrets using HKDF
         hybrid_shared_secret = HKDF(
             algorithm=hashes.SHA256(),
@@ -75,7 +57,7 @@ class KeyExchange:
             info=b"AES-GCM Secure Key",
             backend=default_backend()
         ).derive(kyber_shared_secret + ecdh_shared_secret)
-        
+
         key_material = HKDF(
             algorithm=hashes.SHA256(),
             length=48,  # 32 bytes for AES-256, 16 bytes for HMAC-SHA256 key
@@ -99,24 +81,17 @@ class KeyExchange:
         :rtype: bytes
         """
 
-        expected_kyber_ct_len = 768  # Kyber-512: 768 bytes, Kyber-768: 1088 bytes, Kyber-1024: 1568 bytes
+        expected_kyber_ct_len = 768  # Note: Kyber-512: 768 bytes, Kyber-768: 1088 bytes, Kyber-1024: 1568 bytes
         if len(ciphertext) != expected_kyber_ct_len:
             raise ValueError(f"[ERROR] Invalid Kyber ciphertext length: Expected {expected_kyber_ct_len}, Got {len(ciphertext)}")
 
-        print(f"[DEBUG] Passing Kyber Ciphertext of length {len(ciphertext)} to decaps()")
-
         # Pass the correctly-sized ciphertext to Kyber
         kyber_shared_secret = self.kyber.decaps(kyber_secret_key, ciphertext)
-
-        print(f"[DEBUG] Kyber Shared Secret: {kyber_shared_secret.hex()}")
 
         # ECDH key agreement
         # ecdh_shared_secret = self.ecdh.compute_shared_secret(ecdh_pub)
         peer_ecdh_public_key = self.deserialize_public_key(ecdh_pub)
         ecdh_shared_secret = self.derive_ecdh_shared_secret(peer_ecdh_public_key)
-        print(f"[DEBUG] ECDH Shared Secret: {ecdh_shared_secret.hex()}")
-
-        print(f"[DEBUG] HKDF Input: {ecdh_shared_secret.hex()} + {kyber_shared_secret.hex()}")
 
         # Derive final hybrid key
         combined_secret = kyber_shared_secret + ecdh_shared_secret
